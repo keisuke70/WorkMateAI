@@ -3,7 +3,7 @@ import { Hono, Context } from 'hono'
 import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, Props } from './utils'
 import { clientIdAlreadyApproved, parseRedirectApproval, renderApprovalDialog } from './workers-oauth-utils'
 
-const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>()
+const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers; ROLES: KVNamespace } }>()
 
 app.get('/authorize', async (c) => {
   const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw)
@@ -101,6 +101,15 @@ app.get('/callback', async (c) => {
     email: string
   }
 
+  // Read role list from KV and attach to props
+  const roleString = await c.env.ROLES.get(email) // <- KV read
+  const permissions = roleString
+    ? roleString
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : []
+
   // Return back to the MCP client a new token
   const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
     request: oauthReqInfo,
@@ -113,7 +122,8 @@ app.get('/callback', async (c) => {
       name,
       email,
       accessToken,
-    } as Props,
+      permissions,
+    } as Props & { permissions: string[] },
   })
 
   return Response.redirect(redirectTo)

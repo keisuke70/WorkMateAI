@@ -9,7 +9,10 @@ import { GoogleHandler } from './google-handler'
 // 1.  Types
 // ============================================================
 
-export type Env = { DB: D1Database }
+export type Env = {
+  DB: D1Database
+  ROLES: KVNamespace
+}
 
 type Props = {
   name: string
@@ -17,30 +20,46 @@ type Props = {
   accessToken: string
 }
 
+export function requirePermission(permission: string, handler: (args: any, extra: any) => any) {
+  const want = permission.trim().toLowerCase()
+
+  return async function (this: any, args: any, extra: any) {
+    // Runtime-safe lookup: fall back to [] if missing
+    const perms: string[] = (this.props?.permissions ?? []).map((p: string) => p.trim().toLowerCase())
+
+    if (!perms.includes(want)) {
+      return {
+        status: 403,
+        content: [{ type: 'text', text: `Permission denied – need ${permission}` }],
+      }
+    }
+    // keep env / props by calling through with the same `this`
+    return handler.call(this, args, extra)
+  }
+}
+
 // ============================================================
 // 2.  MCP Agent
 // ============================================================
 
 export class MyMCP extends McpAgent<Props, Env> {
-  // Tell the server what Env looks like so TypeScript knows ctx.env.DB
+ 
   server = new McpServer({
     name: 'Factory-Floor Log MCP',
     version: '0.1.0',
   })
 
   async init() {
-      const allow = (this.env.ALLOWED_EMAILS ?? '')
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean) // ["keith235670@gmail.com"]
+    // debugging kv permissions
+    this.server.tool(
+      'whoAmI',
+      'Debug: show auth context',
+      {},
+      (async () => ({
+        content: [{ type: 'text', text: JSON.stringify(this.props, null, 2) }],
+      })).bind(this),
+    )
 
-      this.server.beforeEach((_req, ctx) => {
-        const email = ctx.props?.claims.email?.toLowerCase()
-        // If the allow-list is non-empty and the caller’s e-mail isn’t in it
-        if (allow.length && (!email || !allow.includes(email))) {
-          throw new Error('unauthorised') // causes 401 for the caller
-        }
-      })
     // ------------------------------------------------------------------
     // Daily Reports
     // ------------------------------------------------------------------
@@ -48,7 +67,7 @@ export class MyMCP extends McpAgent<Props, Env> {
       'queryDailyReports',
       'Return daily reports (optionally filtered by date or employeeId).',
       { date: z.string().optional(), employeeId: z.number().optional() },
-      async (args) => {
+      requirePermission('read_daily', async (args) => {
         const db = this.env.DB
         const { date, employeeId } = args
 
@@ -81,7 +100,7 @@ export class MyMCP extends McpAgent<Props, Env> {
             },
           ],
         }
-      },
+      }).bind(this),
     )
 
     this.server.tool(
@@ -95,7 +114,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         issues: z.string(),
         nextPlan: z.string(),
       },
-      async (args) => {
+      requirePermission('write_daily', async (args) => {
         const db = this.env.DB
         await db
           .prepare(
@@ -109,7 +128,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         return {
           content: [{ type: 'text', text: '✅ Daily report inserted' }],
         }
-      },
+      }).bind(this),
     )
 
     // ------------------------------------------------------------------
@@ -119,7 +138,7 @@ export class MyMCP extends McpAgent<Props, Env> {
       'queryInspectionLogs',
       'List inspections (optionally filtered by equipmentId or date).',
       { equipmentId: z.number().optional(), date: z.string().optional() },
-      async (args) => {
+      requirePermission('read_daily', async (args) => {
         const db = this.env.DB
         const { equipmentId, date } = args
 
@@ -147,7 +166,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         return {
           content: [{ type: 'text', text: JSON.stringify(res.results, null, 2) }],
         }
-      },
+      }).bind(this),
     )
 
     this.server.tool(
@@ -161,7 +180,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         nextSchedule: z.string(),
         inspectDate: z.string(),
       },
-      async (args) => {
+      requirePermission('write_daily', async function (args) {
         const db = this.env.DB
         await db
           .prepare(
@@ -174,7 +193,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         return {
           content: [{ type: 'text', text: '✅ Inspection log inserted' }],
         }
-      },
+      }).bind(this),
     )
 
     // ------------------------------------------------------------------
@@ -184,7 +203,7 @@ export class MyMCP extends McpAgent<Props, Env> {
       'queryAnomalyReports',
       'Fetch anomalies (optionally filtered by equipmentId or since date).',
       { equipmentId: z.number().optional(), since: z.string().optional() },
-      async (args) => {
+      requirePermission('read_daily', async (args) => {
         const db = this.env.DB
         const { equipmentId, since } = args
 
@@ -212,7 +231,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         return {
           content: [{ type: 'text', text: JSON.stringify(res.results, null, 2) }],
         }
-      },
+      }).bind(this),
     )
 
     this.server.tool(
@@ -224,7 +243,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         title: z.string(),
         description: z.string(),
       },
-      async (args) => {
+      requirePermission('write_daily', async function (args, _extra) {
         const db = this.env.DB
         await db
           .prepare(
@@ -238,7 +257,7 @@ export class MyMCP extends McpAgent<Props, Env> {
         return {
           content: [{ type: 'text', text: '✅ Anomaly report inserted' }],
         }
-      },
+      }).bind(this),
     )
   }
 }
@@ -249,7 +268,7 @@ export class MyMCP extends McpAgent<Props, Env> {
 
 export default new OAuthProvider({
   apiRoute: '/sse',
-  apiHandler: MyMCP.mount('/sse'),
+  apiHandler: MyMCP.serveSSE('/sse'),
   defaultHandler: GoogleHandler,
 
   authorizeEndpoint: '/authorize',

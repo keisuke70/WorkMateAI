@@ -34,6 +34,10 @@
     {
       "binding": "OAUTH_KV",
       "id": "8b83444fbaf740e29c1489afed6a5af3"
+    },
+    {
+      "binding": "ROLES",
+      "id": "fb8aff85d8ae4884b0a2f139f80185ac"
     }
   ],
   "observability": {
